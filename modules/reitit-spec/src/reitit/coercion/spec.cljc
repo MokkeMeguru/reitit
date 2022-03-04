@@ -4,7 +4,8 @@
             [reitit.coercion :as coercion]
             [spec-tools.core :as st #?@(:cljs [:refer [Spec]])]
             [spec-tools.data-spec :as ds #?@(:cljs [:refer [Maybe]])]
-            [spec-tools.swagger.core :as swagger])
+            [spec-tools.swagger.core :as swagger]
+            [spec-tools.openapi.core :as openapi])
   #?(:clj
      (:import (spec_tools.core Spec)
               (spec_tools.data_spec Maybe))))
@@ -105,6 +106,31 @@
                               (if (:schema $)
                                 (update $ :schema #(coercion/-compile-model this % nil))
                                 $))]))})))
+        :openapi (openapi/openapi-spec
+                  (merge
+                   (if parameters
+                     {::openapi/parameters
+                      (into
+                       (empty parameters)
+                       (for [[k v] parameters]
+                         [k (coercion/-compile-model this v nil)]))})
+                   (if responses
+                     {:responses
+                      (into
+                       (empty responses)
+                       (for [[k response] responses]
+                         [k
+                          (cond
+                            (map? response)
+                            (cond
+                              (some? (:content response))
+                              {::openapi/content
+                               (apply merge (for [[content-type v] (:content response)]
+                                              {content-type (coercion/-compile-model this v nil)}))}
+                              ;; TODO the example case that response is not content but map, e.g. static variable
+                              :else response)
+                            ;; TODO the example case that response is not map e.g. number or string
+                            :else response)]))})))
         (throw
          (ex-info
           (str "Can't produce Spec apidocs for " specification)
