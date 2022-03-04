@@ -116,7 +116,12 @@
 (defn coerce-response [coercers request response]
   (if response
     (if-let [coercer (or (coercers (:status response)) (coercers :default))]
-      (impl/fast-assoc response :body (coercer request response))
+      (cond
+        ;; for OpenAPI
+        (and (map? coercer) (fn? (get coercer (get-in response [:headers "Content-Type"]))))
+        (impl/fast-assoc response :body ((get coercer (get-in response [:headers "Content-Type"])) request response))
+        ;; for others
+        :else (impl/fast-assoc response :body (coercer request response)))
       response)))
 
 (defn request-coercers [coercion parameters opts]
@@ -128,18 +133,39 @@
            (into {})))
 
 (defn response-coercers [coercion responses opts]
-  (some->> (for [[status {:keys [body]}] responses :when body]
-             [status (response-coercer coercion body opts)])
-           (filter second)
-           (seq)
-           (into {})))
+  (if (every? (fn [opt] (not= :reitit.openapi/openapi (:name opt)))
+              (-> opts :data :middleware))
+    (some->> (for [[status {:keys [body]}] responses :when body]
+               [status (response-coercer coercion body opts)])
+             (filter second)
+             (seq)
+             (into {}))
+    (some->> (for [[status content] responses]
+               [status
+                ;; TODO in openapi spec, if we use :body instead of :content ... what should we do?
+                (when (:content content)
+                  (some->> (for [[content-type content-body] (:content content)]
+                             [content-type (response-coercer coercion content-body opts)])
+                           (filter second)
+                           (seq)
+                           (into {})))])
+             (filter second)
+             (seq)
+             (into {}))))
 
 ;;
 ;; api-docs
 ;;
 
+
 (defn get-apidocs [coercion specification data]
   (let [swagger-parameter {:query :query
+                           :body :body
+                           :form :formData
+                           :header :header
+                           :path :path
+                           :multipart :formData}
+        openapi-parameter {:query :query
                            :body :body
                            :form :formData
                            :header :header
@@ -154,11 +180,21 @@
                             (map (fn [[k v]] [(swagger-parameter k) v]))
                             (filter first)
                             (into {}))))
+                    (-get-apidocs coercion specification))
+      :openapi (->> (update
+                     data
+                     :parameters
+                     (fn [parameters]
+                       (->> parameters
+                            (map (fn [[k v]] [(openapi-parameter k) v]))
+                            (filter first)
+                            (into {}))))
                     (-get-apidocs coercion specification)))))
 
 ;;
 ;; integration
 ;;
+
 
 (defn compile-request-coercers
   "A router :compile implementation which reads the `:parameters`
